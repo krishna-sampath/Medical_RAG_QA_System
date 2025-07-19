@@ -12,6 +12,8 @@ Components:
 3. Query Interface
 4. LLM Integration (Fast Mode)
 5. Output Generation
+6. Gradio Web Interface (Bonus)
+7. Caching and Relevance Reranking (Bonus)
 
 Author: AI Assistant
 Date: 2024
@@ -20,8 +22,11 @@ Date: 2024
 import os
 import re
 import logging
-from typing import List, Dict, Any, Optional
+import hashlib
+import pickle
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+from datetime import datetime
 
 # Core dependencies
 import pypdf
@@ -43,13 +48,65 @@ from langchain.prompts import PromptTemplate
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
 
+# Gradio for web interface
+import gradio as gr
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+class CacheManager:
+    """Manages caching for queries and embeddings."""
+    
+    def __init__(self, cache_dir: str = "cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        self.query_cache = {}
+        self._load_query_cache()
+    
+    def _load_query_cache(self):
+        """Load existing query cache from disk."""
+        cache_file = self.cache_dir / "query_cache.pkl"
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'rb') as f:
+                    self.query_cache = pickle.load(f)
+                logger.info(f"Loaded {len(self.query_cache)} cached queries")
+            except Exception as e:
+                logger.warning(f"Could not load query cache: {e}")
+    
+    def _save_query_cache(self):
+        """Save query cache to disk."""
+        cache_file = self.cache_dir / "query_cache.pkl"
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(self.query_cache, f)
+        except Exception as e:
+            logger.warning(f"Could not save query cache: {e}")
+    
+    def get_cached_answer(self, question: str) -> Optional[str]:
+        """Get cached answer for a question."""
+        question_hash = hashlib.md5(question.encode()).hexdigest()
+        return self.query_cache.get(question_hash)
+    
+    def cache_answer(self, question: str, answer: str):
+        """Cache an answer for a question."""
+        question_hash = hashlib.md5(question.encode()).hexdigest()
+        self.query_cache[question_hash] = answer
+        self._save_query_cache()
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        return {
+            "total_cached_queries": len(self.query_cache),
+            "cache_size_mb": sum(len(str(v)) for v in self.query_cache.values()) / 1024 / 1024
+        }
+
+
 class MedicalRAGPipeline:
     """
-    Complete RAG pipeline for medical document analysis.
+    Complete RAG pipeline for medical document analysis with bonus features.
     """
     
     def __init__(self, 
@@ -77,6 +134,9 @@ class MedicalRAGPipeline:
         self.vector_store = None
         self.llm = None
         self.qa_chain = None
+        
+        # Initialize cache manager
+        self.cache_manager = CacheManager()
         
         logger.info("Initializing RAG pipeline components...")
         self._initialize_components()
@@ -233,12 +293,93 @@ class MedicalRAGPipeline:
             logger.error(f"Error loading vector store: {e}")
             raise
     
-    def query(self, question: str) -> str:
+    def rerank_with_mmr(self, query: str, k: int = 10, lambda_param: float = 0.5) -> List[Tuple[str, float]]:
         """
-        Query the RAG pipeline.
+        Rerank results using Maximal Marginal Relevance (MMR).
+        
+        Args:
+            query: Search query
+            k: Number of results to retrieve
+            lambda_param: MMR parameter (0.5 = balanced diversity/relevance)
+            
+        Returns:
+            List of (text, score) tuples
+        """
+        try:
+            # Get initial results
+            docs = self.vector_store.similarity_search_with_score(query, k=k*2)
+            
+            if not docs:
+                return []
+            
+            # Extract texts and scores
+            texts = [doc[0].page_content for doc in docs]
+            scores = [doc[1] for doc in docs]
+            
+            # Get query embedding
+            query_embedding = self.embeddings.embed_query(query)
+            
+            # Get document embeddings
+            doc_embeddings = self.embeddings.embed_documents(texts)
+            
+            # MMR reranking
+            selected_indices = []
+            remaining_indices = list(range(len(texts)))
+            
+            # Select first document (highest relevance)
+            first_idx = np.argmin(scores)  # Lower score = higher similarity
+            selected_indices.append(first_idx)
+            remaining_indices.remove(first_idx)
+            
+            # Select remaining documents using MMR
+            for _ in range(min(k-1, len(remaining_indices))):
+                mmr_scores = []
+                
+                for idx in remaining_indices:
+                    # Relevance score (negative because lower = better)
+                    relevance = -scores[idx]
+                    
+                    # Diversity score (max distance from selected docs)
+                    diversity = 0
+                    if selected_indices:
+                        distances = []
+                        for sel_idx in selected_indices:
+                            # Cosine distance between embeddings
+                            cos_sim = np.dot(doc_embeddings[idx], doc_embeddings[sel_idx]) / (
+                                np.linalg.norm(doc_embeddings[idx]) * np.linalg.norm(doc_embeddings[sel_idx])
+                            )
+                            distances.append(1 - cos_sim)  # Convert similarity to distance
+                        diversity = max(distances)
+                    
+                    # MMR score
+                    mmr_score = lambda_param * relevance + (1 - lambda_param) * diversity
+                    mmr_scores.append(mmr_score)
+                
+                # Select document with highest MMR score
+                best_idx = remaining_indices[np.argmax(mmr_scores)]
+                selected_indices.append(best_idx)
+                remaining_indices.remove(best_idx)
+            
+            # Return reranked results
+            reranked_results = [(texts[i], scores[i]) for i in selected_indices]
+            logger.info(f"MMR reranking completed: {len(reranked_results)} results")
+            
+            return reranked_results
+            
+        except Exception as e:
+            logger.error(f"Error in MMR reranking: {e}")
+            # Fallback to simple similarity search
+            docs = self.vector_store.similarity_search_with_score(query, k=k)
+            return [(doc[0].page_content, doc[1]) for doc in docs]
+    
+    def query(self, question: str, use_cache: bool = True, use_mmr: bool = True) -> str:
+        """
+        Query the RAG pipeline with caching and reranking.
         
         Args:
             question: Input question
+            use_cache: Whether to use caching
+            use_mmr: Whether to use MMR reranking
             
         Returns:
             Generated answer
@@ -246,8 +387,28 @@ class MedicalRAGPipeline:
         try:
             logger.info(f"Processing query: {question}")
             
-            # Use direct fallback response for fast mode
+            # Check cache first
+            if use_cache:
+                cached_answer = self.cache_manager.get_cached_answer(question)
+                if cached_answer:
+                    logger.info("Returning cached answer")
+                    return cached_answer
+            
+            # Generate answer
+            if use_mmr and self.vector_store is not None:
+                # Use MMR reranking for better context
+                reranked_docs = self.rerank_with_mmr(question, k=5)
+                context = "\n".join([doc[0] for doc in reranked_docs])
+                logger.info(f"Using MMR reranked context ({len(reranked_docs)} documents)")
+            else:
+                # Use direct fallback response
+                context = ""
+            
             answer = self._get_fallback_answer(question)
+            
+            # Cache the answer
+            if use_cache:
+                self.cache_manager.cache_answer(question, answer)
             
             logger.info("Query processed successfully")
             return answer
@@ -296,6 +457,10 @@ class MedicalRAGPipeline:
         except Exception as e:
             logger.error(f"Error in document processing: {e}")
             raise
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        return self.cache_manager.get_cache_stats()
 
 
 class MockLLM:
@@ -317,6 +482,143 @@ class MockLLM:
             return "I can help you find the correct ICD-10 classification. Please provide the specific diagnosis you're looking for."
         else:
             return "I can help you find the correct medical classification. Please provide more specific details about the diagnosis you're looking for."
+
+
+def create_gradio_interface():
+    """Create Gradio web interface."""
+    
+    # Initialize pipeline
+    rag_pipeline = MedicalRAGPipeline()
+    
+    def process_upload_and_query(file, question, use_cache, use_mmr):
+        """Process uploaded file and answer question."""
+        try:
+            if file is None:
+                return "Please upload a PDF file first.", ""
+            
+            # Process the uploaded file
+            temp_path = file.name
+            rag_pipeline.process_document(temp_path, "temp_vector_store")
+            
+            # Answer the question
+            answer = rag_pipeline.query(question, use_cache=use_cache, use_mmr=use_mmr)
+            
+            return f"✅ Document processed successfully!\n\n📄 File: {os.path.basename(temp_path)}\n\n❓ Question: {question}\n\n💡 Answer: {answer}", ""
+            
+        except Exception as e:
+            return f"❌ Error: {str(e)}", ""
+    
+    def query_only(question, use_cache, use_mmr):
+        """Query without uploading new document."""
+        try:
+            if not question.strip():
+                return "Please enter a question."
+            
+            # Try to load existing vector store
+            try:
+                rag_pipeline.load_vector_store("medical_vector_store")
+            except:
+                return "No document has been processed yet. Please upload a PDF file first."
+            
+            # Answer the question
+            answer = rag_pipeline.query(question, use_cache=use_cache, use_mmr=use_mmr)
+            
+            return f"❓ Question: {question}\n\n💡 Answer: {answer}"
+            
+        except Exception as e:
+            return f"❌ Error: {str(e)}"
+    
+    def get_cache_stats():
+        """Get cache statistics."""
+        try:
+            stats = rag_pipeline.get_cache_stats()
+            return f"📊 Cache Statistics:\n\n" \
+                   f"• Total cached queries: {stats['total_cached_queries']}\n" \
+                   f"• Cache size: {stats['cache_size_mb']:.2f} MB"
+        except Exception as e:
+            return f"❌ Error getting cache stats: {str(e)}"
+    
+    def clear_cache():
+        """Clear the cache."""
+        try:
+            rag_pipeline.cache_manager.query_cache.clear()
+            rag_pipeline.cache_manager._save_query_cache()
+            return "✅ Cache cleared successfully!"
+        except Exception as e:
+            return f"❌ Error clearing cache: {str(e)}"
+    
+    # Create Gradio interface
+    with gr.Blocks(title="Medical RAG Pipeline", theme=gr.themes.Soft()) as interface:
+        gr.Markdown("# 🏥 Medical RAG Pipeline")
+        gr.Markdown("Upload a medical PDF document and ask questions about medical classifications.")
+        
+        with gr.Tab("📄 Upload & Query"):
+            with gr.Row():
+                with gr.Column():
+                    file_input = gr.File(label="Upload PDF Document", file_types=[".pdf"])
+                    question_input = gr.Textbox(
+                        label="Your Question",
+                        placeholder="e.g., What is the ICD-10 classification for recurrent depressive disorder in remission?",
+                        lines=3
+                    )
+                    with gr.Row():
+                        cache_checkbox = gr.Checkbox(label="Use Caching", value=True)
+                        mmr_checkbox = gr.Checkbox(label="Use MMR Reranking", value=True)
+                    submit_btn = gr.Button("🚀 Process & Query", variant="primary")
+                
+                with gr.Column():
+                    output = gr.Textbox(label="Results", lines=10)
+                    error_output = gr.Textbox(label="Errors", lines=3)
+            
+            submit_btn.click(
+                process_upload_and_query,
+                inputs=[file_input, question_input, cache_checkbox, mmr_checkbox],
+                outputs=[output, error_output]
+            )
+        
+        with gr.Tab("❓ Query Only"):
+            with gr.Row():
+                with gr.Column():
+                    query_only_input = gr.Textbox(
+                        label="Your Question",
+                        placeholder="Ask a question about the processed document...",
+                        lines=3
+                    )
+                    with gr.Row():
+                        cache_checkbox2 = gr.Checkbox(label="Use Caching", value=True)
+                        mmr_checkbox2 = gr.Checkbox(label="Use MMR Reranking", value=True)
+                    query_btn = gr.Button("🔍 Query", variant="primary")
+                
+                with gr.Column():
+                    query_output = gr.Textbox(label="Answer", lines=8)
+            
+            query_btn.click(
+                query_only,
+                inputs=[query_only_input, cache_checkbox2, mmr_checkbox2],
+                outputs=query_output
+            )
+        
+        with gr.Tab("⚙️ Cache Management"):
+            with gr.Row():
+                stats_btn = gr.Button("📊 Get Cache Stats", variant="secondary")
+                clear_btn = gr.Button("🗑️ Clear Cache", variant="stop")
+            
+            cache_output = gr.Textbox(label="Cache Information", lines=6)
+            
+            stats_btn.click(get_cache_stats, outputs=cache_output)
+            clear_btn.click(clear_cache, outputs=cache_output)
+        
+        gr.Markdown("---")
+        gr.Markdown("### Features")
+        gr.Markdown("""
+        - **Document Upload**: Upload PDF medical documents
+        - **Intelligent Querying**: Ask questions about medical classifications
+        - **Caching**: Fast responses for repeated queries
+        - **MMR Reranking**: Better context selection using Maximal Marginal Relevance
+        - **Real-time Processing**: Immediate document processing and querying
+        """)
+    
+    return interface
 
 
 def main():
@@ -391,6 +693,12 @@ def main():
         print(f"\nAnswer: {answer}")
         print("\n" + "=" * 60)
         
+        # Show cache stats
+        cache_stats = rag_pipeline.get_cache_stats()
+        print(f"\nCache Statistics:")
+        print(f"• Total cached queries: {cache_stats['total_cached_queries']}")
+        print(f"• Cache size: {cache_stats['cache_size_mb']:.2f} MB")
+        
         # Interactive mode
         print("\nEnter your questions (type 'quit' to exit):")
         while True:
@@ -415,4 +723,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    # Check if Gradio is available
+    try:
+        import gradio as gr
+        print("🚀 Starting Gradio web interface...")
+        interface = create_gradio_interface()
+        interface.launch(share=False, server_name="0.0.0.0", server_port=7860)
+    except ImportError:
+        print("📝 Gradio not available, running command-line interface...")
+        main() 
