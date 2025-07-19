@@ -330,7 +330,7 @@ python3 -m pip install gradio
 
 ## AI Tools Usage Disclosure
 
-The basic code structure was developed with assistance from AI coding tools, but the design architecture, implementation logic, model selection decisions, and overall approach to the RAG pipeline were developed independently in a professional manner.
+The basic code structure was developed with assistance from AI(ChatGPT/Claude) coding tools, but the design architecture, implementation logic, model selection decisions, and overall approach to the RAG pipeline were developed independently in a professional manner.
 
 ## License
 
