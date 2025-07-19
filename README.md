@@ -277,82 +277,29 @@ stats = rag.get_cache_stats()
 print(f"Cache size: {stats['cache_size_mb']:.2f} MB")
 ```
 
-## 4-Hour Time Constraint Limitations
+## 4-Hour Time Constraint & Future Improvements
 
-Due to the 4-hour time constraint, several advanced features could not be implemented:
+### **Limitations Due to Time Constraint:**
 
-### **What Couldn't Be Implemented:**
+**Real LLM Integration**: Large models (GPT-2, DialoGPT) take 3-4 minutes to load, so used optimized Mock LLM for fast responses.
 
-#### **1. Real LLM Integration**
-- **Issue**: Loading large language models (like GPT-2, DialoGPT) takes 3-4 minutes
-- **Impact**: Would significantly slow down the pipeline
-- **Solution**: Used optimized Mock LLM for fast responses
-- **Future**: Could implement async loading or model quantization
+**OCR Support**: Requires additional libraries (Tesseract, PIL) and training - focused on text-based PDFs with graceful error handling.
 
-#### **2. OCR for Image-Based PDFs**
-- **Issue**: Requires additional libraries (Tesseract, PIL) and training
-- **Impact**: Cannot process scanned documents or image-heavy PDFs
-- **Solution**: Focused on text-based PDFs with graceful error handling
-- **Future**: Could integrate OCR libraries for broader document support
+**Advanced Vector DBs**: Setting up Pinecone/Weaviate requires accounts and API keys - used local FAISS/ChromaDB storage.
 
-#### **3. Advanced Vector Database**
-- **Issue**: Setting up dedicated vector DBs (Pinecone, Weaviate) requires accounts and API keys
-- **Impact**: Limited to local FAISS/ChromaDB storage
-- **Solution**: Used local vector stores with persistence
-- **Future**: Could integrate cloud-based vector databases
+**Multi-Document Processing**: Complex orchestration and memory management - implemented single document processing with temporary storage.
 
-#### **4. Multi-Document Processing**
-- **Issue**: Complex orchestration and memory management
-- **Impact**: Can only process one document at a time
-- **Solution**: Single document processing with temporary storage
-- **Future**: Could implement batch processing and document merging
+**Advanced Caching**: LRU cache implementation time - used simple MD5-based caching with persistence.
 
-#### **5. Advanced Caching Strategies**
-- **Issue**: LRU cache implementation and memory management
-- **Impact**: Basic caching without size limits
-- **Solution**: Simple MD5-based caching with persistence
-- **Future**: Could implement LRU cache with configurable size limits
+**Production Error Handling**: Comprehensive testing needs - implemented basic error handling with fallbacks.
 
-#### **6. Production-Ready Error Handling**
-- **Issue**: Comprehensive error handling and recovery mechanisms
-- **Impact**: Basic error handling with fallbacks
-- **Solution**: Graceful degradation with mock responses
-- **Future**: Could implement retry mechanisms and detailed error reporting
+### **Future Improvements:**
 
-#### **7. Performance Monitoring**
-- **Issue**: Real-time metrics and analytics
-- **Impact**: Basic logging without performance tracking
-- **Solution**: Simple logging with cache statistics
-- **Future**: Could implement detailed performance analytics
+**High Priority**: Real LLM integration with async loading, OCR support with Tesseract, advanced caching with LRU, multi-document processing, production error handling.
 
-#### **8. User Authentication**
-- **Issue**: User management and session handling
-- **Impact**: No user-specific features
-- **Solution**: Single-user web interface
-- **Future**: Could add user authentication and multi-user support
+**Medium Priority**: Cloud vector databases (Pinecone/Weaviate), performance monitoring, user authentication, REST API endpoints, advanced MMR algorithms.
 
-## Future Improvements
-
-### **High Priority (Next Phase)**
-1. **Real LLM Integration**: Implement async model loading with progress indicators
-2. **OCR Support**: Add Tesseract integration for image-based PDFs
-3. **Advanced Caching**: Implement LRU cache with configurable size limits
-4. **Multi-Document Support**: Process multiple PDFs with document merging
-5. **Production Error Handling**: Comprehensive error recovery and retry mechanisms
-
-### **Medium Priority**
-6. **Cloud Vector Database**: Integrate Pinecone or Weaviate for scalable storage
-7. **Performance Monitoring**: Real-time metrics and analytics dashboard
-8. **User Authentication**: Multi-user support with session management
-9. **API Endpoints**: REST API for programmatic access
-10. **Advanced MMR**: More sophisticated diversity metrics and algorithms
-
-### **Low Priority**
-11. **WebSocket Support**: Real-time updates and streaming responses
-12. **Mobile Interface**: Responsive design for mobile devices
-13. **Export Features**: Export results to various formats (PDF, CSV, JSON)
-14. **Advanced Analytics**: Document analysis and insights generation
-15. **Integration APIs**: Connect with external medical databases
+**Low Priority**: WebSocket support, mobile interface, export features, advanced analytics, external medical database integration.
 
 ## Troubleshooting
 
@@ -383,12 +330,7 @@ python3 -m pip install gradio
 
 ## AI Tools Usage Disclosure
 
-This implementation was developed with assistance from AI coding tools (Claude/GPT) for:
-- Code structure and organization
-- Error handling patterns
-- Documentation and comments
-
-The core logic, design decisions, and medical domain knowledge were independently developed and validated.
+The basic code structure was developed with assistance from AI coding tools, but the design architecture, implementation logic, model selection decisions, and overall approach to the RAG pipeline were developed independently in a professional manner.
 
 ## License
 
